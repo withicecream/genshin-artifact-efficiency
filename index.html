@@ -85,6 +85,14 @@
       </label>
       <label class="ctl"><input type="checkbox" id="protect" checked> Protect locked / equipped</label>
       <label class="ctl"><input type="checkbox" id="lowRarity" checked> Treat 3&#9733; &amp; below as Discard</label>
+      <label class="ctl">Flat-stat strictness
+        <select id="flatLevel">
+          <option value="lenient" selected>Lenient (current)</option>
+          <option value="moderate">Moderate</option>
+          <option value="strict">Strict (recommended)</option>
+          <option value="ruthless">Ruthless</option>
+        </select>
+      </label>
       <button class="primary" id="recalc">Recalculate</button>
     </div>
     <div class="legend">
@@ -111,6 +119,19 @@
       <button id="csvBtn">Download CSV</button>
       <button class="primary" id="goodBtn">Export GOOD (keepers locked)</button>
     </div>
+  </div>
+
+  <div class="card" id="compareCard" style="display:none">
+    <b>Flat-stat strictness comparison</b>
+    <div class="hint">Same thresholds &amp; toggles &mdash; only the credit given to flat
+      HP/ATK/DEF substats changes. <b>&Delta; Discard</b> = how many extra artifacts become
+      discardable versus the Lenient (current) view. The main table above still reflects the
+      strictness picked in the controls.</div>
+    <table id="cmpTbl" style="margin-top:8px">
+      <thead><tr><th>Strictness</th><th>Keep</th><th>Maybe</th>
+        <th>Discard</th><th>&Delta; Discard vs Lenient</th></tr></thead>
+      <tbody></tbody>
+    </table>
   </div>
 
   <div class="card" id="tableCard" style="display:none">
@@ -211,6 +232,26 @@ const PRETTY = {hp:"HP",atk:"ATK",def:"DEF",hp_:"HP%",atk_:"ATK%",def_:"DEF%",
   hydro_dmg_:"Hydro%",pyro_dmg_:"Pyro%",cryo_dmg_:"Cryo%",dendro_dmg_:"Dendro%"};
 const pretty = k => PRETTY[k] || k;
 
+/* Flat-stat strictness. "lenient" = original embedded weights (unchanged
+   existing view). Stricter levels override flat HP/ATK/DEF credit but only
+   for archetypes that already cared about that flat stat, so the no-false-
+   discard guarantee holds (real keepers never relied on flat substats). */
+const FLAT = {
+  lenient:  null,
+  moderate: {hp:0.10, atk:0.20, def:0.05},
+  strict:   {hp:0.05, atk:0.15, def:0.00},
+  ruthless: {hp:0,    atk:0,    def:0}
+};
+const FLAT_KEYS = new Set(["hp","atk","def"]);
+
+function subWeight(arch, key, flatLevel){
+  const base = ARCH[arch].sub[key];
+  if(!FLAT_KEYS.has(key)) return base || 0;
+  if(base === undefined) return 0;                 // archetype ignores this flat stat
+  if(flatLevel === "lenient" || !FLAT[flatLevel]) return base;   // existing view
+  return FLAT[flatLevel][key];
+}
+
 function mainFit(arch, slot, mainKey){
   if(slot==="flower"||slot==="plume") return 1;        // fixed main, never penalize
   if(slot==="circlet" && mainKey==="heal_") return arch==="heal"?1:0.15;
@@ -225,10 +266,10 @@ function rollUnits(sub, rarity){
   return sub.value / mx;                                // ~1.0 per max roll
 }
 
-function archScore(art, arch){
-  const w = ARCH[arch].sub;
+function archScore(art, arch, flatLevel){
   let s = 0;
-  for(const sub of art.substats) s += rollUnits(sub, art.rarity) * (w[sub.key] || 0);
+  for(const sub of art.substats)
+    s += rollUnits(sub, art.rarity) * subWeight(arch, sub.key, flatLevel);
   return s * mainFit(arch, art.slot, art.mainStatKey);
 }
 
@@ -237,13 +278,14 @@ function archScore(art, arch){
    substats, into a perfect new one). This is the safety guarantee:
    if even this can't clear the bar, the artifact is genuinely worthless. */
 function classify(art, cfg){
+  const fl = cfg.flatLevel || "lenient";
   let best=-1, bestArch="-";
-  for(const a in ARCH){ const sc=archScore(art,a); if(sc>best){best=sc;bestArch=a;} }
+  for(const a in ARCH){ const sc=archScore(art,a,fl); if(sc>best){best=sc;bestArch=a;} }
 
   const remaining = Math.max(0, Math.floor((20 - art.level)/4));
-  const w = ARCH[bestArch].sub;
   let bestSubW = 0;
-  for(const sub of art.substats) bestSubW = Math.max(bestSubW, w[sub.key]||0);
+  for(const sub of art.substats)
+    bestSubW = Math.max(bestSubW, subWeight(bestArch, sub.key, fl));
   if(art.substats.length < 4) bestSubW = 1;             // unknown future substat: assume ideal
   const fit = mainFit(bestArch, art.slot, art.mainStatKey);
   const optimistic = best + remaining * bestSubW * fit;
@@ -292,7 +334,8 @@ function cfg(){
     keepT:parseFloat(keepT.value)||3,
     maybeT:parseFloat(maybeT.value)||1.5,
     protect:protect.checked,
-    lowRarity:lowRarity.checked
+    lowRarity:lowRarity.checked,
+    flatLevel:flatLevel.value
   };
 }
 
@@ -309,6 +352,34 @@ function compute(){
       loc:a.location|| (a.lock?"🔒":"-")});
   });
   render();
+  renderComparison();
+}
+
+const FLAT_ORDER=[["lenient","Lenient (current)"],["moderate","Moderate"],
+  ["strict","Strict (recommended)"],["ruthless","Ruthless"]];
+
+function renderComparison(){
+  const base=cfg();
+  const arts=normalize(RAW);
+  const tb=document.querySelector("#cmpTbl tbody"); tb.innerHTML="";
+  let lenDiscard=0;
+  for(const [lvl,label] of FLAT_ORDER){
+    const c=Object.assign({},base,{flatLevel:lvl});
+    let k=0,m=0,d=0;
+    for(const a of arts){
+      const r=classify(a,c);
+      if(r.cls==="KEEP")k++; else if(r.cls==="MAYBE")m++; else d++;
+    }
+    if(lvl==="lenient") lenDiscard=d;
+    const delta = lvl==="lenient" ? "&mdash;" : "+"+(d-lenDiscard);
+    const sel = lvl===base.flatLevel ? ' style="background:var(--panel2)"' : '';
+    const tr=document.createElement("tr");
+    tr.innerHTML=`<td${sel}>${label}</td><td>${k}</td><td>${m}</td>`+
+      `<td style="color:var(--discard);font-weight:600">${d}</td>`+
+      `<td style="color:var(--maybe);font-weight:600">${delta}</td>`;
+    tb.appendChild(tr);
+  }
+  document.getElementById("compareCard").style.display="block";
 }
 
 function render(){
@@ -410,6 +481,7 @@ file.addEventListener("change",e=>{
   rd.readAsText(f);
 });
 document.getElementById("recalc").onclick=compute;
+document.getElementById("flatLevel").onchange=compute;
 document.getElementById("csvBtn").onclick=downloadCSV;
 document.getElementById("goodBtn").onclick=exportGOOD;
 [fClass,fSlot,fSet].forEach(el=>el.onchange=render);
