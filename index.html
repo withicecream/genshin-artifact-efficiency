@@ -134,6 +134,18 @@
     </table>
   </div>
 
+  <div class="card" id="levelCard" style="display:none">
+    <b>Level breakdown</b>
+    <div class="hint">Inventory distribution by artifact level at the current strictness,
+      and how the <b>Maybe</b> bucket splits across levels. Most hoard bloat is typically
+      unleveled (+0) pieces &mdash; this shows whether that's the case for you.</div>
+    <table id="lvlTbl" style="margin-top:8px">
+      <thead><tr><th>Level</th><th>Total</th><th>Keep</th><th>Maybe</th>
+        <th>Discard</th><th>Share of all Maybe</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
   <div class="card" id="tableCard" style="display:none">
     <div class="row" style="margin-bottom:6px">
       <label class="ctl">Show
@@ -353,6 +365,36 @@ function compute(){
   });
   render();
   renderComparison();
+  renderLevels();
+}
+
+function renderLevels(){
+  const by={}; let maybeTotal=0, k=0, m=0, d=0;
+  for(const r of ROWS){
+    const o = by[r.level] || (by[r.level]={t:0,KEEP:0,MAYBE:0,DISCARD:0});
+    o.t++; o[r.cls]++;
+    if(r.cls==="KEEP")k++; else if(r.cls==="MAYBE"){m++;maybeTotal++;} else d++;
+  }
+  const tb=document.querySelector("#lvlTbl tbody"); tb.innerHTML="";
+  for(const L of Object.keys(by).map(Number).sort((a,b)=>a-b)){
+    const o=by[L];
+    const pct = maybeTotal ? (100*o.MAYBE/maybeTotal).toFixed(1)+"%" : "0%";
+    const tr=document.createElement("tr");
+    tr.innerHTML=`<td>+${L}</td><td>${o.t}</td>`+
+      `<td style="color:var(--keep)">${o.KEEP}</td>`+
+      `<td style="color:var(--maybe);font-weight:600">${o.MAYBE}</td>`+
+      `<td style="color:var(--discard)">${o.DISCARD}</td>`+
+      `<td>${pct}</td>`;
+    tb.appendChild(tr);
+  }
+  const tr=document.createElement("tr");
+  tr.style.borderTop="2px solid var(--accent)";
+  tr.innerHTML=`<td><b>All</b></td><td><b>${ROWS.length}</b></td>`+
+    `<td style="color:var(--keep)"><b>${k}</b></td>`+
+    `<td style="color:var(--maybe)"><b>${m}</b></td>`+
+    `<td style="color:var(--discard)"><b>${d}</b></td><td><b>100%</b></td>`;
+  tb.appendChild(tr);
+  document.getElementById("levelCard").style.display="block";
 }
 
 const FLAT_ORDER=[["lenient","Lenient (current)"],["moderate","Moderate"],
