@@ -85,6 +85,12 @@
       </label>
       <label class="ctl"><input type="checkbox" id="protect" checked> Protect locked / equipped</label>
       <label class="ctl"><input type="checkbox" id="lowRarity" checked> Treat 3&#9733; &amp; below as Discard</label>
+      <label class="ctl">Safety mode
+        <select id="safetyMode">
+          <option value="maxsafety" selected>Maximum safety</option>
+          <option value="balanced">Balanced (unleveled triage)</option>
+        </select>
+      </label>
       <label class="ctl">Flat-stat strictness
         <select id="flatLevel">
           <option value="lenient" selected>Lenient (current)</option>
@@ -130,6 +136,19 @@
     <table id="cmpTbl" style="margin-top:8px">
       <thead><tr><th>Strictness</th><th>Keep</th><th>Maybe</th>
         <th>Discard</th><th>&Delta; Discard vs Lenient</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <div class="card" id="modeCard" style="display:none">
+    <b>Safety-mode comparison</b>
+    <div class="hint">Same thresholds, toggles &amp; flat strictness &mdash; only the rule for
+      <b>unleveled (level &le; 4)</b> artifacts changes. Leveled pieces are identical in both
+      modes. <b>Balanced</b> discards unleveled pieces whose main stat + existing core substats
+      can't realistically become useful on average rolls. &Delta; columns are vs Maximum safety.</div>
+    <table id="modeTbl" style="margin-top:8px">
+      <thead><tr><th>Safety mode</th><th>Keep</th><th>Maybe</th><th>Discard</th>
+        <th>&Delta; Maybe</th><th>&Delta; Discard</th></tr></thead>
       <tbody></tbody>
     </table>
   </div>
@@ -285,11 +304,65 @@ function archScore(art, arch, flatLevel){
   return s * mainFit(arch, art.slot, art.mainStatKey);
 }
 
+/* Balanced unleveled-triage (level <= 4 only). The main stat never changes
+   with leveling, so an archetype is only a real prospect if its main stat
+   fits AND the piece already holds >=1 core substat for it. Upside is judged
+   on EXPECTED rolls (avg 0.85 of max; an unknown future substat contributes
+   only its average relevance ~0.35), not perfect rolls. A piece with no core
+   substat for any archetype its main serves is universal fodder -> discard. */
+function classifyBalanced(art, cfg){
+  const fl = cfg.flatLevel || "lenient";
+  const locked = art.lock || (art.location && art.location !== "");
+  if(cfg.protect && locked)
+    return {cls:"KEEP",bestArch:"-",score:0,potential:0,locked,
+      reason: art.lock ? "Locked in GOOD" : "Equipped on "+art.location};
+  if(cfg.lowRarity && art.rarity <= 3 && !locked)
+    return {cls:"DISCARD",bestArch:"-",score:0,potential:0,locked,
+      reason:"3★ / low rarity — outclassed by 5★ for every role"};
+
+  const remaining = Math.max(0, Math.floor((20 - art.level)/4));
+  const AVG=0.85, NEW_E=0.35, REL=0.5;
+  let bestExp=-1, bestCur=-1, bestArch="-", anyViable=false;
+  for(const a in ARCH){
+    const fit = mainFit(a, art.slot, art.mainStatKey);
+    if(fit <= 0) continue;                         // main stat doesn't serve this archetype
+    let bestRelW=0, hasRel=false;
+    for(const sub of art.substats){
+      const wgt = subWeight(a, sub.key, fl);
+      if(wgt >= REL){ hasRel=true; if(wgt>bestRelW) bestRelW=wgt; }
+    }
+    if(!hasRel) continue;                          // no core substat foundation to build on
+    anyViable=true;
+    const cur = archScore(art, a, fl);
+    let gain = remaining * AVG * bestRelW;
+    if(art.substats.length < 4) gain += AVG * NEW_E;
+    const exp = cur + gain * fit;
+    if(exp > bestExp){ bestExp=exp; bestArch=a; }
+    if(cur > bestCur) bestCur=cur;
+  }
+
+  if(!anyViable)
+    return {cls:"DISCARD",bestArch:"-",score:0,potential:0,locked,
+      reason:"Unleveled & no core substat for any archetype its main stat serves — fodder"};
+  if(bestCur >= cfg.keepT)
+    return {cls:"KEEP",bestArch,score:bestCur,potential:bestExp,locked,
+      reason:"Already strong for "+bestArch};
+  if(bestExp >= cfg.keepT)
+    return {cls:"MAYBE",bestArch,score:bestCur,potential:bestExp,locked,
+      reason:"Expected to reach a "+bestArch+" keeper with average rolls — level to test"};
+  if(bestExp >= cfg.maybeT)
+    return {cls:"MAYBE",bestArch,score:bestCur,potential:bestExp,locked,
+      reason:"Borderline for "+bestArch+" on expected (average) rolls"};
+  return {cls:"DISCARD",bestArch,score:bestCur,potential:bestExp,locked,
+    reason:"Unleveled; expected value stays below useful even with average rolls"};
+}
+
 /* Optimistic score: assume every remaining +4 roll lands at max into the
    artifact's best existing relevant substat (or, if it still has <4
    substats, into a perfect new one). This is the safety guarantee:
    if even this can't clear the bar, the artifact is genuinely worthless. */
 function classify(art, cfg){
+  if(cfg.mode === "balanced" && art.level <= 4) return classifyBalanced(art, cfg);
   const fl = cfg.flatLevel || "lenient";
   let best=-1, bestArch="-";
   for(const a in ARCH){ const sc=archScore(art,a,fl); if(sc>best){best=sc;bestArch=a;} }
@@ -347,7 +420,8 @@ function cfg(){
     maybeT:parseFloat(maybeT.value)||1.5,
     protect:protect.checked,
     lowRarity:lowRarity.checked,
-    flatLevel:flatLevel.value
+    flatLevel:flatLevel.value,
+    mode:safetyMode.value
   };
 }
 
@@ -365,7 +439,36 @@ function compute(){
   });
   render();
   renderComparison();
+  renderModeCompare();
   renderLevels();
+}
+
+const MODE_ORDER=[["maxsafety","Maximum safety"],["balanced","Balanced (unleveled triage)"]];
+
+function renderModeCompare(){
+  const base=cfg();
+  const arts=normalize(RAW);
+  const tb=document.querySelector("#modeTbl tbody"); tb.innerHTML="";
+  let baseM=0, baseD=0;
+  for(const [mode,label] of MODE_ORDER){
+    const c=Object.assign({},base,{mode});
+    let k=0,m=0,d=0;
+    for(const a of arts){
+      const r=classify(a,c);
+      if(r.cls==="KEEP")k++; else if(r.cls==="MAYBE")m++; else d++;
+    }
+    if(mode==="maxsafety"){ baseM=m; baseD=d; }
+    const dM = mode==="maxsafety" ? "&mdash;" : (m-baseM>=0?"+":"")+(m-baseM);
+    const dD = mode==="maxsafety" ? "&mdash;" : "+"+(d-baseD);
+    const sel = mode===(base.mode||"maxsafety") ? ' style="background:var(--panel2)"' : '';
+    const tr=document.createElement("tr");
+    tr.innerHTML=`<td${sel}>${label}</td><td style="color:var(--keep)">${k}</td>`+
+      `<td style="color:var(--maybe)">${m}</td>`+
+      `<td style="color:var(--discard);font-weight:600">${d}</td>`+
+      `<td>${dM}</td><td style="color:var(--discard);font-weight:600">${dD}</td>`;
+    tb.appendChild(tr);
+  }
+  document.getElementById("modeCard").style.display="block";
 }
 
 function renderLevels(){
@@ -524,6 +627,7 @@ file.addEventListener("change",e=>{
 });
 document.getElementById("recalc").onclick=compute;
 document.getElementById("flatLevel").onchange=compute;
+document.getElementById("safetyMode").onchange=compute;
 document.getElementById("csvBtn").onclick=downloadCSV;
 document.getElementById("goodBtn").onclick=exportGOOD;
 [fClass,fSlot,fSet].forEach(el=>el.onchange=render);
