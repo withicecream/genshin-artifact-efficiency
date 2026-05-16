@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Genshin Artifact Efficiency &mdash; Safe Cleaner</title>
+<style>
+  :root{
+    --bg:#0f1117; --panel:#171a22; --panel2:#1d212b; --border:#2a2f3a;
+    --txt:#e6e8ee; --muted:#9aa1b1; --accent:#7aa2ff;
+    --keep:#2ecc71; --maybe:#f1c40f; --discard:#e74c3c; --locked:#5dade2;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font:14px/1.5 system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+       background:var(--bg);color:var(--txt)}
+  header{padding:18px 22px;border-bottom:1px solid var(--border);background:var(--panel)}
+  h1{margin:0 0 4px;font-size:20px}
+  .sub{color:var(--muted);font-size:13px}
+  main{padding:18px 22px;max-width:1500px;margin:0 auto}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:10px;
+        padding:16px;margin-bottom:16px}
+  .row{display:flex;flex-wrap:wrap;gap:14px;align-items:center}
+  button,select,input[type=number]{background:var(--panel2);color:var(--txt);
+        border:1px solid var(--border);border-radius:7px;padding:8px 12px;font:inherit;cursor:pointer}
+  button:hover{border-color:var(--accent)}
+  button.primary{background:var(--accent);color:#0b0d12;border-color:var(--accent);font-weight:600}
+  input[type=file]{color:var(--muted)}
+  .stats{display:flex;flex-wrap:wrap;gap:10px;margin-top:6px}
+  .stat{flex:1;min-width:120px;background:var(--panel2);border:1px solid var(--border);
+        border-radius:9px;padding:12px 14px;text-align:center}
+  .stat b{display:block;font-size:24px;line-height:1.1}
+  .stat span{color:var(--muted);font-size:12px}
+  .pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:12px;font-weight:600}
+  .KEEP{background:rgba(46,204,113,.16);color:var(--keep)}
+  .MAYBE{background:rgba(241,196,15,.16);color:var(--maybe)}
+  .DISCARD{background:rgba(231,76,60,.16);color:var(--discard)}
+  .LOCKED{background:rgba(93,173,226,.16);color:var(--locked)}
+  table{width:100%;border-collapse:collapse;margin-top:10px;font-size:13px}
+  th,td{padding:7px 9px;border-bottom:1px solid var(--border);text-align:left;vertical-align:top}
+  th{position:sticky;top:0;background:var(--panel);cursor:pointer;user-select:none;white-space:nowrap}
+  th:hover{color:var(--accent)}
+  tr:hover td{background:var(--panel2)}
+  .tablewrap{max-height:62vh;overflow:auto;border:1px solid var(--border);border-radius:10px}
+  .sub-list{color:var(--muted);font-size:12px}
+  .sub-good{color:var(--keep)}
+  .reason{color:var(--muted);font-size:12px;max-width:340px}
+  .legend{color:var(--muted);font-size:12px;margin-top:8px}
+  .legend code{background:var(--panel2);padding:1px 6px;border-radius:5px;color:var(--txt)}
+  label.ctl{display:flex;align-items:center;gap:7px;color:var(--muted);font-size:13px}
+  a{color:var(--accent)}
+  .barwrap{display:flex;gap:2px;height:26px;border-radius:6px;overflow:hidden;margin-top:10px}
+  .barwrap div{display:flex;align-items:center;justify-content:center;color:#0b0d12;
+        font-size:12px;font-weight:700;min-width:34px}
+  .hint{color:var(--muted);font-size:12px;margin-top:6px}
+  .danger{color:var(--discard)}
+</style>
+</head>
+<body>
+<header>
+  <h1>Genshin Artifact Efficiency &mdash; Safe Cleaner</h1>
+  <div class="sub">Load a GOOD export, see Keep / Maybe / Discard. <b>Maximum-safety</b> mode:
+    an artifact is only ever marked <span class="pill DISCARD">DISCARD</span> when even perfect
+    future rolls cannot make it useful for <i>any</i> stat archetype. Everything runs in your
+    browser &mdash; your data never leaves this page.</div>
+</header>
+<main>
+
+  <div class="card">
+    <div class="row">
+      <input type="file" id="file" accept=".json,application/json" />
+      <button id="sampleBtn">Load sample data</button>
+      <span class="sub" id="loadInfo"></span>
+    </div>
+    <div class="hint">Get a GOOD file from Genshin Optimizer (Database &rarr; Export) or a
+      scanner (Adepti / Amenoma / Artiscan). Nothing is uploaded &mdash; parsing happens locally.</div>
+  </div>
+
+  <div class="card" id="controls" style="display:none">
+    <div class="row">
+      <label class="ctl">Keep threshold
+        <input type="number" id="keepT" value="3.0" step="0.1" min="0" style="width:80px">
+      </label>
+      <label class="ctl">Maybe threshold
+        <input type="number" id="maybeT" value="1.5" step="0.1" min="0" style="width:80px">
+      </label>
+      <label class="ctl"><input type="checkbox" id="protect" checked> Protect locked / equipped</label>
+      <label class="ctl"><input type="checkbox" id="lowRarity" checked> Treat 3&#9733; &amp; below as Discard</label>
+      <button class="primary" id="recalc">Recalculate</button>
+    </div>
+    <div class="legend">
+      Score = best of all archetypes (crit / atk / hp / def / em-reaction / er-support / heal) of
+      <code>&Sigma; substatRollValue &times; archetypeWeight &times; mainStatFit</code>.
+      Discard requires the <i>optimistic</i> score (assuming every remaining roll lands perfectly)
+      to stay below the Maybe threshold &mdash; so true keepers are never cut.
+    </div>
+  </div>
+
+  <div class="card" id="summary" style="display:none">
+    <div class="stats">
+      <div class="stat"><b id="cTotal">0</b><span>Total</span></div>
+      <div class="stat"><b id="cKeep" style="color:var(--keep)">0</b><span>Keep</span></div>
+      <div class="stat"><b id="cMaybe" style="color:var(--maybe)">0</b><span>Maybe</span></div>
+      <div class="stat"><b id="cDiscard" style="color:var(--discard)">0</b><span>Discard</span></div>
+      <div class="stat"><b id="cLocked" style="color:var(--locked)">0</b><span>Locked / Equipped</span></div>
+    </div>
+    <div class="barwrap" id="bar"></div>
+    <div class="hint">Safe cleanup workflow: click <b>Export GOOD (keepers locked)</b>, re-import
+      that file into Genshin Optimizer, then in-game lock everything GO shows as locked and trash
+      the rest. You never delete from this tool.</div>
+    <div class="row" style="margin-top:12px">
+      <button id="csvBtn">Download CSV</button>
+      <button class="primary" id="goodBtn">Export GOOD (keepers locked)</button>
+    </div>
+  </div>
+
+  <div class="card" id="tableCard" style="display:none">
+    <div class="row" style="margin-bottom:6px">
+      <label class="ctl">Show
+        <select id="fClass">
+          <option value="">All</option>
+          <option value="KEEP">Keep</option>
+          <option value="MAYBE">Maybe</option>
+          <option value="DISCARD">Discard</option>
+        </select>
+      </label>
+      <label class="ctl">Slot <select id="fSlot"><option value="">All</option></select></label>
+      <label class="ctl">Set <select id="fSet"><option value="">All</option></select></label>
+      <input type="text" id="search" placeholder="Search set / character / stat..."
+             style="flex:1;min-width:180px;border:1px solid var(--border);border-radius:7px;
+             padding:8px 12px;background:var(--panel2);color:var(--txt)">
+    </div>
+    <div class="tablewrap">
+      <table id="tbl">
+        <thead><tr>
+          <th data-k="cls">Class</th><th data-k="set">Set</th><th data-k="slot">Slot</th>
+          <th data-k="rarity">&#9733;</th><th data-k="level">Lvl</th><th data-k="main">Main</th>
+          <th data-k="subsText">Substats (roll value %)</th>
+          <th data-k="bestArch">Best for</th><th data-k="score">Score</th>
+          <th data-k="potential">Max</th><th data-k="loc">Where</th>
+          <th data-k="reason">Why</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <b>How to view this online without external hosting</b>
+    <div class="hint">
+      &bull; <b>GitHub Pages</b>: repo Settings &rarr; Pages &rarr; Deploy from branch &rarr; pick the
+      branch and <code>/ (root)</code>. Served at <code>https://&lt;you&gt;.github.io/genshin-artifact-efficiency/</code>.<br>
+      &bull; <b>htmlpreview</b> (no setup): <code>https://htmlpreview.github.io/?https://github.com/&lt;you&gt;/genshin-artifact-efficiency/blob/&lt;branch&gt;/index.html</code><br>
+      &bull; <b>Local</b>: just open <code>index.html</code> in a browser.
+    </div>
+  </div>
+
+</main>
+<script>
+"use strict";
+
+/* ---------- Datamine: max single-roll substat value by rarity ---------- */
+const MAX_ROLL = {
+  5:{hp:298.75,atk:19.45,def:23.15,hp_:5.83,atk_:5.83,def_:7.29,eleMas:23.31,
+     enerRech_:6.48,critRate_:3.89,critDMG_:7.77},
+  4:{hp:191.7,atk:12.45,def:14.85,hp_:4.66,atk_:4.66,def_:5.83,eleMas:18.63,
+     enerRech_:5.18,critRate_:3.11,critDMG_:6.22},
+  3:{hp:143.2,atk:9.34,def:11.04,hp_:3.5,atk_:3.5,def_:4.37,eleMas:13.97,
+     enerRech_:3.89,critRate_:2.33,critDMG_:4.66}
+};
+
+/* ---------- Stat-archetype model -----------------------------------------
+   Each character archetype values a set of substats. Weight 1 = core,
+   0.x = useful, 0 = irrelevant. "em" (transformative-reaction) has NO crit
+   weight by design. Main-stat fit is judged per slot. Flower/plume mains are
+   fixed, so they never penalize (neutral 1.0). The classifier keeps an
+   artifact if ANY archetype finds it valuable, so HP/DEF/EM/non-crit
+   characters cannot lose their keepers. */
+const ARCH = {
+  crit:{sub:{critRate_:1,critDMG_:1,atk_:.85,eleMas:.4,enerRech_:.3,atk:.2},
+        main:{sands:{atk_:1,eleMas:.8,enerRech_:.6,hp_:.3,def_:.3},
+              goblet:{dmg:1,atk_:.7,eleMas:.5},
+              circlet:{critRate_:1,critDMG_:1,atk_:.5}}},
+  atk:{sub:{atk_:1,critRate_:.85,critDMG_:.85,enerRech_:.3,atk:.25,eleMas:.3},
+        main:{sands:{atk_:1,enerRech_:.6},goblet:{dmg:1,atk_:.8},
+              circlet:{critRate_:1,critDMG_:1,atk_:.7}}},
+  hp:{sub:{hp_:1,critRate_:.7,critDMG_:.7,eleMas:.3,enerRech_:.3,hp:.25},
+        main:{sands:{hp_:1,enerRech_:.5},goblet:{hp_:1,dmg:.8},
+              circlet:{hp_:1,critRate_:.8,critDMG_:.8}}},
+  def:{sub:{def_:1,critRate_:.7,critDMG_:.7,enerRech_:.3,def:.25},
+        main:{sands:{def_:1,enerRech_:.4},goblet:{def_:1,dmg:.7},
+              circlet:{def_:1,critRate_:.7,critDMG_:.7}}},
+  em:{sub:{eleMas:1,enerRech_:.6,hp_:.4,atk_:.4,def_:.2},        /* reactions: no crit */
+        main:{sands:{eleMas:1,enerRech_:.7,atk_:.4,hp_:.4},
+              goblet:{eleMas:1,dmg:.8,atk_:.4,hp_:.4},
+              circlet:{eleMas:1,hp_:.5,atk_:.5}}},
+  er:{sub:{enerRech_:1,eleMas:.3,hp_:.25,atk_:.25,def_:.25},     /* batteries */
+        main:{sands:{enerRech_:1,atk_:.4,hp_:.4,eleMas:.4},
+              goblet:{atk_:.5,hp_:.5,eleMas:.5,dmg:.5},
+              circlet:{atk_:.5,hp_:.5,eleMas:.5,critRate_:.6,critDMG_:.6}}},
+  heal:{sub:{hp_:.8,enerRech_:.5,eleMas:.45,critRate_:.4,critDMG_:.4,atk_:.3},
+        main:{sands:{hp_:1,enerRech_:.7,eleMas:.5},
+              goblet:{hp_:1,eleMas:.6},
+              circlet:{hp_:.9,critRate_:.6}}}      /* heal_ circlet handled as main bonus */
+};
+const DMG_MAINS = new Set(["physical_dmg_","anemo_dmg_","geo_dmg_","electro_dmg_",
+  "hydro_dmg_","pyro_dmg_","cryo_dmg_","dendro_dmg_"]);
+
+const PRETTY = {hp:"HP",atk:"ATK",def:"DEF",hp_:"HP%",atk_:"ATK%",def_:"DEF%",
+  eleMas:"EM",enerRech_:"ER%",critRate_:"CR%",critDMG_:"CD%",heal_:"Heal%",
+  physical_dmg_:"Phys%",anemo_dmg_:"Anemo%",geo_dmg_:"Geo%",electro_dmg_:"Electro%",
+  hydro_dmg_:"Hydro%",pyro_dmg_:"Pyro%",cryo_dmg_:"Cryo%",dendro_dmg_:"Dendro%"};
+const pretty = k => PRETTY[k] || k;
+
+function mainFit(arch, slot, mainKey){
+  if(slot==="flower"||slot==="plume") return 1;        // fixed main, never penalize
+  if(slot==="circlet" && mainKey==="heal_") return arch==="heal"?1:0.15;
+  const m = ARCH[arch].main[slot] || {};
+  if(DMG_MAINS.has(mainKey)) return m.dmg || 0;
+  return m[mainKey] !== undefined ? m[mainKey] : 0;
+}
+
+function rollUnits(sub, rarity){
+  const mx = (MAX_ROLL[rarity] || MAX_ROLL[5])[sub.key];
+  if(!mx) return 0;
+  return sub.value / mx;                                // ~1.0 per max roll
+}
+
+function archScore(art, arch){
+  const w = ARCH[arch].sub;
+  let s = 0;
+  for(const sub of art.substats) s += rollUnits(sub, art.rarity) * (w[sub.key] || 0);
+  return s * mainFit(arch, art.slot, art.mainStatKey);
+}
+
+/* Optimistic score: assume every remaining +4 roll lands at max into the
+   artifact's best existing relevant substat (or, if it still has <4
+   substats, into a perfect new one). This is the safety guarantee:
+   if even this can't clear the bar, the artifact is genuinely worthless. */
+function classify(art, cfg){
+  let best=-1, bestArch="-";
+  for(const a in ARCH){ const sc=archScore(art,a); if(sc>best){best=sc;bestArch=a;} }
+
+  const remaining = Math.max(0, Math.floor((20 - art.level)/4));
+  const w = ARCH[bestArch].sub;
+  let bestSubW = 0;
+  for(const sub of art.substats) bestSubW = Math.max(bestSubW, w[sub.key]||0);
+  if(art.substats.length < 4) bestSubW = 1;             // unknown future substat: assume ideal
+  const fit = mainFit(bestArch, art.slot, art.mainStatKey);
+  const optimistic = best + remaining * bestSubW * fit;
+
+  const locked = art.lock || (art.location && art.location !== "");
+  let cls, reason;
+
+  if(cfg.protect && locked){
+    cls="KEEP"; reason = art.lock ? "Locked in GOOD" : "Equipped on "+art.location;
+  } else if(cfg.lowRarity && art.rarity <= 3 && !locked){
+    cls="DISCARD"; reason="3★ / low rarity — outclassed by 5★ for every role";
+  } else if(best >= cfg.keepT){
+    cls="KEEP"; reason="Strong for "+bestArch+" right now";
+  } else if(optimistic >= cfg.keepT){
+    cls="MAYBE"; reason="Could become a "+bestArch+" keeper with good rolls — level to test";
+  } else if(optimistic >= cfg.maybeT){
+    cls="MAYBE"; reason="Borderline for "+bestArch+" even with perfect rolls";
+  } else {
+    cls="DISCARD";
+    reason="Even perfect future rolls stay below useful for every archetype (best: "+bestArch+")";
+  }
+  return {cls, bestArch, score:best, potential:optimistic, locked, reason};
+}
+
+/* ---------------------------- App state ---------------------------- */
+let RAW=null, ROWS=[], sortKey="score", sortDir=-1;
+
+function normalize(good){
+  const arts = (good && good.artifacts) || [];
+  return arts.map((a,i)=>({
+    _i:i,
+    set:a.setKey||"?",
+    slot:a.slotKey||"?",
+    rarity:a.rarity||5,
+    level:a.level||0,
+    mainStatKey:a.mainStatKey||"",
+    substats:(a.substats||[]).filter(s=>s&&s.key&&s.value),
+    location:a.location||"",
+    lock:!!a.lock,
+    _orig:a
+  }));
+}
+
+function cfg(){
+  return {
+    keepT:parseFloat(keepT.value)||3,
+    maybeT:parseFloat(maybeT.value)||1.5,
+    protect:protect.checked,
+    lowRarity:lowRarity.checked
+  };
+}
+
+function compute(){
+  const c=cfg();
+  ROWS = normalize(RAW).map(a=>{
+    const r=classify(a,c);
+    const subsText=a.substats.map(s=>{
+      const u=rollUnits(s,a.rarity)*100;
+      return pretty(s.key)+" "+s.value+" ("+u.toFixed(0)+"%)";
+    }).join(", ");
+    return Object.assign(a,r,{subsText,
+      main:pretty(a.mainStatKey),
+      loc:a.location|| (a.lock?"🔒":"-")});
+  });
+  render();
+}
+
+function render(){
+  const counts={KEEP:0,MAYBE:0,DISCARD:0,LOCKED:0};
+  for(const r of ROWS){ counts[r.cls]++; if(r.locked) counts.LOCKED++; }
+  cTotal.textContent=ROWS.length;
+  cKeep.textContent=counts.KEEP; cMaybe.textContent=counts.MAYBE;
+  cDiscard.textContent=counts.DISCARD; cLocked.textContent=counts.LOCKED;
+
+  const bar=document.getElementById("bar"); bar.innerHTML="";
+  const segs=[["KEEP",counts.KEEP,"var(--keep)"],["MAYBE",counts.MAYBE,"var(--maybe)"],
+              ["DISCARD",counts.DISCARD,"var(--discard)"]];
+  const tot=ROWS.length||1;
+  for(const [name,n,col] of segs){ if(!n) continue;
+    const d=document.createElement("div");
+    d.style.background=col; d.style.flex=n/tot;
+    d.textContent=n+" "+name; bar.appendChild(d); }
+
+  const slots=[...new Set(ROWS.map(r=>r.slot))].sort();
+  const sets=[...new Set(ROWS.map(r=>r.set))].sort();
+  fillSel(fSlot,slots); fillSel(fSet,sets);
+
+  const fc=fClass.value, fs=fSlot.value, fset=fSet.value,
+        q=search.value.trim().toLowerCase();
+  let view=ROWS.filter(r=>
+    (!fc||r.cls===fc)&&(!fs||r.slot===fs)&&(!fset||r.set===fset)&&
+    (!q||(r.set+" "+r.location+" "+r.subsText+" "+r.main).toLowerCase().includes(q)));
+
+  view.sort((a,b)=>{
+    let x=a[sortKey],y=b[sortKey];
+    if(typeof x==="string"){x=x.toLowerCase();y=(""+y).toLowerCase();}
+    return x<y?-sortDir:x>y?sortDir:0;
+  });
+
+  const tb=document.querySelector("#tbl tbody"); tb.innerHTML="";
+  for(const r of view){
+    const tr=document.createElement("tr");
+    tr.innerHTML=
+      `<td><span class="pill ${r.cls}">${r.cls}</span>${r.locked?' <span class="pill LOCKED">🔒</span>':''}</td>`+
+      `<td>${esc(r.set)}</td><td>${r.slot}</td><td>${r.rarity}★</td><td>+${r.level}</td>`+
+      `<td>${r.main}</td><td class="sub-list">${esc(r.subsText)}</td>`+
+      `<td>${r.bestArch}</td><td>${r.score.toFixed(2)}</td>`+
+      `<td>${r.potential.toFixed(2)}</td><td>${esc(r.loc)}</td>`+
+      `<td class="reason">${esc(r.reason)}</td>`;
+    tb.appendChild(tr);
+  }
+  controls.style.display=summary.style.display=tableCard.style.display="block";
+}
+
+function fillSel(sel,vals){
+  const cur=sel.value;
+  sel.innerHTML='<option value="">All</option>'+
+    vals.map(v=>`<option ${v===cur?'selected':''}>${esc(v)}</option>`).join("");
+}
+function esc(s){return (""+s).replace(/[&<>"]/g,c=>(
+  {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
+
+/* ---------------------------- Exports ---------------------------- */
+function downloadCSV(){
+  const head=["class","set","slot","rarity","level","mainStat","substats",
+              "bestArchetype","score","optimisticScore","location","locked","reason"];
+  const lines=[head.join(",")];
+  for(const r of ROWS){
+    lines.push([r.cls,r.set,r.slot,r.rarity,r.level,r.mainStatKey,
+      '"'+r.subsText.replace(/"/g,'""')+'"',r.bestArch,r.score.toFixed(3),
+      r.potential.toFixed(3),r.location||"",r.locked,
+      '"'+r.reason.replace(/"/g,'""')+'"'].join(","));
+  }
+  dl(lines.join("\n"),"artifact-classification.csv","text/csv");
+}
+function exportGOOD(){
+  const out=JSON.parse(JSON.stringify(RAW));
+  const byIdx={}; ROWS.forEach(r=>byIdx[r._i]=r);
+  out.artifacts=(out.artifacts||[]).map((a,i)=>{
+    const r=byIdx[i];
+    a.lock = !!(r && (r.cls==="KEEP"||r.cls==="MAYBE"));   // discardables = unlocked
+    return a;
+  });
+  dl(JSON.stringify(out),"good-keepers-locked.json","application/json");
+}
+function dl(text,name,type){
+  const b=new Blob([text],{type}); const u=URL.createObjectURL(b);
+  const a=document.createElement("a"); a.href=u; a.download=name; a.click();
+  URL.revokeObjectURL(u);
+}
+
+/* ---------------------------- Wiring ---------------------------- */
+file.addEventListener("change",e=>{
+  const f=e.target.files[0]; if(!f) return;
+  const rd=new FileReader();
+  rd.onload=()=>{
+    try{
+      RAW=JSON.parse(rd.result);
+      if(!RAW.artifacts) throw new Error("No 'artifacts' array — is this a GOOD file?");
+      loadInfo.textContent=RAW.artifacts.length+" artifacts loaded from "+f.name;
+      compute();
+    }catch(err){ loadInfo.innerHTML='<span class="danger">'+esc(err.message)+'</span>'; }
+  };
+  rd.readAsText(f);
+});
+document.getElementById("recalc").onclick=compute;
+document.getElementById("csvBtn").onclick=downloadCSV;
+document.getElementById("goodBtn").onclick=exportGOOD;
+[fClass,fSlot,fSet].forEach(el=>el.onchange=render);
+search.oninput=render;
+document.querySelectorAll("#tbl th").forEach(th=>th.onclick=()=>{
+  const k=th.dataset.k;
+  if(sortKey===k) sortDir*=-1; else {sortKey=k;sortDir=-1;}
+  render();
+});
+
+/* ---------------------------- Sample ---------------------------- */
+document.getElementById("sampleBtn").onclick=()=>{
+  RAW={format:"GOOD",version:2,source:"sample",artifacts:[
+    {setKey:"GladiatorsFinale",slotKey:"flower",rarity:5,level:20,mainStatKey:"hp",
+     substats:[{key:"critRate_",value:7.8},{key:"critDMG_",value:14},
+               {key:"atk_",value:9.9},{key:"eleMas",value:42}],location:"",lock:false},
+    {setKey:"GildedDreams",slotKey:"sands",rarity:5,level:20,mainStatKey:"eleMas",
+     substats:[{key:"enerRech_",value:11},{key:"hp_",value:9.3},
+               {key:"atk_",value:5.3},{key:"def",value:37}],location:"Nahida",lock:true},
+    {setKey:"NoblesseOblige",slotKey:"goblet",rarity:5,level:0,mainStatKey:"def_",
+     substats:[{key:"hp",value:209},{key:"def_",value:5.1},{key:"enerRech_",value:4.5}],
+     location:"",lock:false},
+    {setKey:"WanderersTroupe",slotKey:"circlet",rarity:5,level:20,mainStatKey:"def_",
+     substats:[{key:"def",value:44},{key:"hp",value:568},
+               {key:"atk",value:33},{key:"def_",value:5.8}],location:"",lock:false},
+    {setKey:"ArchaicPetra",slotKey:"plume",rarity:4,level:0,mainStatKey:"atk",
+     substats:[{key:"def_",value:5.8},{key:"hp",value:209},{key:"def",value:19}],
+     location:"",lock:false},
+    {setKey:"EmblemOfSeveredFate",slotKey:"sands",rarity:5,level:16,mainStatKey:"enerRech_",
+     substats:[{key:"critRate_",value:6.6},{key:"critDMG_",value:13.2},
+               {key:"atk_",value:9.3},{key:"eleMas",value:19}],location:"",lock:false},
+    {setKey:"VermillionHereafter",slotKey:"circlet",rarity:3,level:0,mainStatKey:"atk_",
+     substats:[{key:"hp",value:60},{key:"def",value:8}],location:"",lock:false}
+  ]};
+  loadInfo.textContent=RAW.artifacts.length+" sample artifacts loaded";
+  compute();
+};
+</script>
+</body>
+</html>
