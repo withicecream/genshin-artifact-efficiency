@@ -35,6 +35,9 @@
   .MAYBE{background:rgba(241,196,15,.16);color:var(--maybe)}
   .DISCARD{background:rgba(231,76,60,.16);color:var(--discard)}
   .LOCKED{background:rgba(93,173,226,.16);color:var(--locked)}
+  .QPerfect{background:rgba(46,204,113,.16);color:var(--keep)}
+  .QMixed{background:rgba(241,196,15,.16);color:var(--maybe)}
+  .QImperfect{background:rgba(231,76,60,.13);color:var(--discard)}
   table{width:100%;border-collapse:collapse;margin-top:10px;font-size:13px}
   th,td{padding:7px 9px;border-bottom:1px solid var(--border);text-align:left;vertical-align:top}
   th{position:sticky;top:0;background:var(--panel);cursor:pointer;user-select:none;white-space:nowrap}
@@ -89,6 +92,13 @@
         <select id="safetyMode">
           <option value="maxsafety" selected>Maximum safety</option>
           <option value="balanced">Balanced (unleveled triage)</option>
+        </select>
+      </label>
+      <label class="ctl">Balanced aggressiveness
+        <select id="balancedAggr">
+          <option value="soft">Soft</option>
+          <option value="standard" selected>Standard</option>
+          <option value="aggressive">Aggressive</option>
         </select>
       </label>
       <label class="ctl">Flat-stat strictness
@@ -165,6 +175,21 @@
     </table>
   </div>
 
+  <div class="card" id="qualityCard" style="display:none">
+    <b>Substat-quality breakdown</b>
+    <div class="hint"><span class="pill QPerfect">Perfect</span> every substat counts for
+      the piece's best build and the main stat fits &mdash;
+      <span class="pill QMixed">Mixed</span> exactly one dead substat line &mdash;
+      <span class="pill QImperfect">Imperfect</span> two or more dead lines or a wrong main.
+      This is independent of Keep/Discard: a Perfect piece in Keep is a god-roll; a Perfect
+      piece still in Maybe is worth leveling first.</div>
+    <table id="qualTbl" style="margin-top:8px">
+      <thead><tr><th>Quality</th><th>Total</th><th>Keep</th><th>Maybe</th>
+        <th>Discard</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
   <div class="card" id="tableCard" style="display:none">
     <div class="row" style="margin-bottom:6px">
       <label class="ctl">Show
@@ -187,6 +212,7 @@
           <th data-k="cls">Class</th><th data-k="set">Set</th><th data-k="slot">Slot</th>
           <th data-k="rarity">&#9733;</th><th data-k="level">Lvl</th><th data-k="main">Main</th>
           <th data-k="subsText">Substats (roll value %)</th>
+          <th data-k="quality">Quality</th>
           <th data-k="bestArch">Best for</th><th data-k="score">Score</th>
           <th data-k="potential">Max</th><th data-k="loc">Where</th>
           <th data-k="reason">Why</th>
@@ -310,6 +336,24 @@ function archScore(art, arch, flatLevel){
    on EXPECTED rolls (avg 0.85 of max; an unknown future substat contributes
    only its average relevance ~0.35), not perfect rolls. A piece with no core
    substat for any archetype its main serves is universal fodder -> discard. */
+/* Substat-lineup quality, independent of keep/discard. Perfect = every
+   substat counts for the artifact's best archetype and the main stat fits;
+   Mixed = exactly one dead substat line; Imperfect = >=2 dead lines or a
+   wrong main stat for its best build. */
+function quality(art, flatLevel){
+  let best=-1, arch="-";
+  for(const a in ARCH){ const s=archScore(art,a,flatLevel); if(s>best){best=s;arch=a;} }
+  if(arch==="-") return "Imperfect";
+  const slot=art.slot;
+  if(slot!=="flower" && slot!=="plume" && mainFit(arch,slot,art.mainStatKey)<=0)
+    return "Imperfect";
+  let dead=0;
+  for(const s of art.substats) if(subWeight(arch,s.key,flatLevel) < 0.3) dead++;
+  if(dead===0) return "Perfect";
+  if(dead===1) return "Mixed";
+  return "Imperfect";
+}
+
 function classifyBalanced(art, cfg){
   const fl = cfg.flatLevel || "lenient";
   const locked = art.lock || (art.location && art.location !== "");
@@ -322,10 +366,13 @@ function classifyBalanced(art, cfg){
 
   const remaining = Math.max(0, Math.floor((20 - art.level)/4));
   const AVG=0.85, NEW_E=0.35, REL=0.5;
+  const aggr = cfg.balancedAggr || "standard";
   let bestExp=-1, bestCur=-1, bestArch="-", anyViable=false;
   for(const a in ARCH){
+    if(aggr==="aggressive" && a==="er") continue;  // ER alone isn't a discriminator
     const fit = mainFit(a, art.slot, art.mainStatKey);
-    if(fit <= 0) continue;                         // main stat doesn't serve this archetype
+    if(fit <= 0) continue;                          // main stat doesn't serve this archetype
+    if(aggr==="aggressive" && fit < 0.7) continue;  // require a primary (not marginal) main
     let bestRelW=0, hasRel=false;
     for(const sub of art.substats){
       const wgt = subWeight(a, sub.key, fl);
@@ -350,11 +397,11 @@ function classifyBalanced(art, cfg){
   if(bestExp >= cfg.keepT)
     return {cls:"MAYBE",bestArch,score:bestCur,potential:bestExp,locked,
       reason:"Expected to reach a "+bestArch+" keeper with average rolls — level to test"};
-  if(bestExp >= cfg.maybeT)
+  if(aggr==="soft" && bestExp >= cfg.maybeT)
     return {cls:"MAYBE",bestArch,score:bestCur,potential:bestExp,locked,
-      reason:"Borderline for "+bestArch+" on expected (average) rolls"};
+      reason:"Borderline for "+bestArch+" on expected rolls (Soft keeps these)"};
   return {cls:"DISCARD",bestArch,score:bestCur,potential:bestExp,locked,
-    reason:"Unleveled; expected value stays below useful even with average rolls"};
+    reason:"Unleveled; not expected to become a "+bestArch+" keeper on average rolls"};
 }
 
 /* Optimistic score: assume every remaining +4 roll lands at max into the
@@ -421,7 +468,8 @@ function cfg(){
     protect:protect.checked,
     lowRarity:lowRarity.checked,
     flatLevel:flatLevel.value,
-    mode:safetyMode.value
+    mode:safetyMode.value,
+    balancedAggr:balancedAggr.value
   };
 }
 
@@ -434,6 +482,7 @@ function compute(){
       return pretty(s.key)+" "+s.value+" ("+u.toFixed(0)+"%)";
     }).join(", ");
     return Object.assign(a,r,{subsText,
+      quality:quality(a,c.flatLevel),
       main:pretty(a.mainStatKey),
       loc:a.location|| (a.lock?"🔒":"-")});
   });
@@ -441,17 +490,40 @@ function compute(){
   renderComparison();
   renderModeCompare();
   renderLevels();
+  renderQuality();
 }
 
-const MODE_ORDER=[["maxsafety","Maximum safety"],["balanced","Balanced (unleveled triage)"]];
+function renderQuality(){
+  const g={Perfect:{t:0,KEEP:0,MAYBE:0,DISCARD:0},
+           Mixed:{t:0,KEEP:0,MAYBE:0,DISCARD:0},
+           Imperfect:{t:0,KEEP:0,MAYBE:0,DISCARD:0}};
+  for(const r of ROWS){ const o=g[r.quality]; o.t++; o[r.cls]++; }
+  const tb=document.querySelector("#qualTbl tbody"); tb.innerHTML="";
+  for(const q of ["Perfect","Mixed","Imperfect"]){
+    const o=g[q];
+    const tr=document.createElement("tr");
+    tr.innerHTML=`<td><span class="pill Q${q}">${q}</span></td><td>${o.t}</td>`+
+      `<td style="color:var(--keep)">${o.KEEP}</td>`+
+      `<td style="color:var(--maybe)">${o.MAYBE}</td>`+
+      `<td style="color:var(--discard)">${o.DISCARD}</td>`;
+    tb.appendChild(tr);
+  }
+  document.getElementById("qualityCard").style.display="block";
+}
+
+const MODE_ORDER=[
+  ["maxsafety",null,"Maximum safety"],
+  ["balanced","soft","Balanced — Soft"],
+  ["balanced","standard","Balanced — Standard"],
+  ["balanced","aggressive","Balanced — Aggressive"]];
 
 function renderModeCompare(){
   const base=cfg();
   const arts=normalize(RAW);
   const tb=document.querySelector("#modeTbl tbody"); tb.innerHTML="";
   let baseM=0, baseD=0;
-  for(const [mode,label] of MODE_ORDER){
-    const c=Object.assign({},base,{mode});
+  for(const [mode,aggr,label] of MODE_ORDER){
+    const c=Object.assign({},base,{mode},aggr?{balancedAggr:aggr}:{});
     let k=0,m=0,d=0;
     for(const a of arts){
       const r=classify(a,c);
@@ -460,7 +532,9 @@ function renderModeCompare(){
     if(mode==="maxsafety"){ baseM=m; baseD=d; }
     const dM = mode==="maxsafety" ? "&mdash;" : (m-baseM>=0?"+":"")+(m-baseM);
     const dD = mode==="maxsafety" ? "&mdash;" : "+"+(d-baseD);
-    const sel = mode===(base.mode||"maxsafety") ? ' style="background:var(--panel2)"' : '';
+    const isCur = mode===(base.mode||"maxsafety") &&
+                  (mode!=="balanced" || aggr===(base.balancedAggr||"standard"));
+    const sel = isCur ? ' style="background:var(--panel2)"' : '';
     const tr=document.createElement("tr");
     tr.innerHTML=`<td${sel}>${label}</td><td style="color:var(--keep)">${k}</td>`+
       `<td style="color:var(--maybe)">${m}</td>`+
@@ -566,6 +640,7 @@ function render(){
       `<td><span class="pill ${r.cls}">${r.cls}</span>${r.locked?' <span class="pill LOCKED">🔒</span>':''}</td>`+
       `<td>${esc(r.set)}</td><td>${r.slot}</td><td>${r.rarity}★</td><td>+${r.level}</td>`+
       `<td>${r.main}</td><td class="sub-list">${esc(r.subsText)}</td>`+
+      `<td><span class="pill Q${r.quality}">${r.quality}</span></td>`+
       `<td>${r.bestArch}</td><td>${r.score.toFixed(2)}</td>`+
       `<td>${r.potential.toFixed(2)}</td><td>${esc(r.loc)}</td>`+
       `<td class="reason">${esc(r.reason)}</td>`;
@@ -628,6 +703,7 @@ file.addEventListener("change",e=>{
 document.getElementById("recalc").onclick=compute;
 document.getElementById("flatLevel").onchange=compute;
 document.getElementById("safetyMode").onchange=compute;
+document.getElementById("balancedAggr").onchange=compute;
 document.getElementById("csvBtn").onclick=downloadCSV;
 document.getElementById("goodBtn").onclick=exportGOOD;
 [fClass,fSlot,fSet].forEach(el=>el.onchange=render);
